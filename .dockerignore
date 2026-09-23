@@ -1,0 +1,5 @@
+.git
+loadtest
+*.md
+docker-compose.yml
+.github

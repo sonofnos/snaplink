@@ -1,0 +1,29 @@
+# Documents the intended Render topology. Render's CLI has no
+# `blueprints launch`, so the actual deploy was done as separate
+# `render services create --runtime docker` / `render redis create`
+# calls against the shared free-tier Postgres this account already runs
+# (one free Postgres per account; snaplink gets its own database +
+# role inside it, same pattern as the other sonofnos services).
+services:
+  - type: web
+    name: snaplink
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: BASE_URL
+        value: https://snaplink.sonofnos.com
+      - key: DATABASE_URL
+        fromDatabase:
+          name: shared-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: snaplink-redis
+          type: redis
+          property: connectionString
+
+  - type: redis
+    name: snaplink-redis
+    plan: free
+    ipAllowList: []
