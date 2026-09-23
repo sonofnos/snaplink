@@ -9,10 +9,9 @@ import (
 )
 
 const (
-	urlKeyPrefix     = "url:"     // code -> long URL, hot-path cache
-	counterKey       = "id:seq"   // shared monotonic counter, INCRBY'd in blocks
-	rateLimitPrefix  = "rl:"      // per-IP sliding window counter for the create endpoint
-	clicksKeyPrefix  = "clicks:"  // code -> live click counter (fast reads, eventually reconciled with Postgres)
+	urlKeyPrefix    = "url:"    // code -> long URL, hot-path cache
+	rateLimitPrefix = "rl:"     // per-IP sliding window counter for the create endpoint
+	clicksKeyPrefix = "clicks:" // code -> live click counter (fast reads, eventually reconciled with Postgres)
 )
 
 type Redis struct {
@@ -48,24 +47,6 @@ func (r *Redis) GetURL(ctx context.Context, code string) (string, error) {
 
 func (r *Redis) SetURL(ctx context.Context, code, longURL string) error {
 	return r.client.Set(ctx, urlKeyPrefix+code, longURL, r.ttl).Err()
-}
-
-// EnsureCounterFloor seeds the ID counter so freshly-created codes don't
-// start at "0"/"1"/etc (technically fine, just looks unfinished for a
-// portfolio demo). SETNX is a no-op once the counter already exists.
-func (r *Redis) EnsureCounterFloor(ctx context.Context, floor uint64) error {
-	return r.client.SetNX(ctx, counterKey, floor, 0).Err()
-}
-
-// --- idgen.Reserver ---
-
-// ReserveBlock atomically reserves [start, start+size) via a single INCRBY.
-func (r *Redis) ReserveBlock(ctx context.Context, size uint64) (uint64, error) {
-	newTotal, err := r.client.IncrBy(ctx, counterKey, int64(size)).Result()
-	if err != nil {
-		return 0, err
-	}
-	return uint64(newTotal) - size, nil
 }
 
 // --- live click counters ---

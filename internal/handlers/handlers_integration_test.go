@@ -74,7 +74,7 @@ func setup(t *testing.T) http.Handler {
 
 	logger := slog.New(slog.NewTextHandler(testingWriter{t}, nil))
 	local := cache.New(1000, 30*time.Second)
-	ids := idgen.New(rdb, 100)
+	ids := idgen.New(db, 1000)
 	an := analytics.New(db, rdb, 1000, 50*time.Millisecond, logger)
 
 	analyticsCtx, cancel := context.WithCancel(ctx)

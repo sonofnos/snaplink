@@ -1,3 +1,15 @@
+-- Backs idgen's block allocator (see internal/idgen). INCREMENT BY 1000
+-- means one nextval() call reserves a whole block: the block's first ID
+-- is (nextval() - 999). Sequences are non-transactional in Postgres (a
+-- rolled-back transaction does not give back the value), which is
+-- exactly the "never reuse, gaps are fine" guarantee an ID generator
+-- needs, and unlike a Redis counter it can't be silently evicted under
+-- memory pressure.
+CREATE SEQUENCE IF NOT EXISTS link_id_seq
+    AS BIGINT
+    INCREMENT BY 1000
+    START WITH 60466176; -- 62^4: guarantees short codes are at least 5 characters
+
 CREATE TABLE IF NOT EXISTS links (
     id          BIGINT PRIMARY KEY,
     code        VARCHAR(32) NOT NULL UNIQUE,

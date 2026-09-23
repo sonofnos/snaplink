@@ -1,19 +1,25 @@
 // Package idgen hands out globally unique, monotonically increasing IDs
 // without a per-request round trip to shared state.
 //
-// A naive design calls Redis INCR once per shortened URL created. That's
-// fine well past 100M redirects/day (writes are a small fraction of
-// traffic) but it's still one network round trip per write, and it makes
-// every app instance depend on Redis being reachable to create a link.
+// A naive design calls a counter's INCR once per shortened URL created.
+// That's fine well past 100M redirects/day (writes are a small fraction
+// of traffic) but it's still one round trip per write, and it makes every
+// app instance depend on that counter's store being reachable to create a
+// link. The counter also has to be durable: a cache-backed counter that
+// gets evicted under memory pressure would silently hand out reused IDs.
+// (This is why the production Reserver, store.Postgres.ReserveBlock, is
+// backed by a Postgres sequence rather than a Redis counter — sequences
+// are non-transactional and never evicted.)
 //
 // Instead each instance reserves a *block* of IDs at once (BlockSize,
-// default 1000) via a single atomic INCRBY, then hands out IDs from that
-// block locally until it runs out. This cuts coordination traffic by
-// ~1000x and lets link creation keep working, briefly, through a Redis
-// blip — at the cost of leaving gaps in the ID space when an instance
-// restarts with unused IDs in its block. That's an acceptable trade for
-// a short-code allocator (codes aren't sequential-facing to users, and
-// base62 doesn't need dense packing to stay short).
+// default 1000) via a single atomic reservation, then hands out IDs from
+// that block locally until it runs out. This cuts coordination traffic by
+// ~1000x and lets link creation keep working, briefly, through a brief
+// outage of the counter's store — at the cost of leaving gaps in the ID
+// space when an instance restarts with unused IDs in its block. That's an
+// acceptable trade for a short-code allocator (codes aren't
+// sequential-facing to users, and base62 doesn't need dense packing to
+// stay short).
 package idgen
 
 import (

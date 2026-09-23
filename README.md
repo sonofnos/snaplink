@@ -45,15 +45,26 @@ Two things happen on every redirect that could, naively, slow it down:
 issuing a new short code, and recording the click. Both are designed to
 never touch the hot path's latency:
 
-- **ID generation** (`internal/idgen`): a naive `INCR` in Redis per link
-  created is fast, but it's still a network round trip per write, and it
-  makes link *creation* depend on Redis being reachable at that instant.
-  Instead each app instance reserves a **block** of 1,000 IDs at once
-  (one atomic `INCRBY`), then hands out IDs from that block locally.
-  ~1000x fewer coordination round trips, and instances keep creating
-  links through a brief Redis blip. The trade: a restarted instance
-  abandons its unused block, leaving small gaps in the ID space — fine,
-  since codes aren't meant to be dense or sequential-looking to users.
+- **ID generation** (`internal/idgen`): a naive counter `INCR` per link
+  created is fast, but it's still a round trip per write, and — more
+  importantly — it has to never lose state. The free Redis instance this
+  runs on is shared with another service and configured with `allkeys_lru`
+  eviction (i.e. it can evict *any* key, not just expired ones, under
+  memory pressure), which would be a correctness bug waiting to happen for
+  a uniqueness counter: an evicted counter resets to zero and starts
+  handing out already-issued IDs. So the counter lives on a **Postgres
+  sequence** instead (`link_id_seq`, `INCREMENT BY 1000`) — sequences are
+  non-transactional and never evicted, which is exactly the durability a
+  unique-ID source needs. Each app instance reserves a **block** of 1,000
+  IDs at once (one `nextval()` call), then hands out IDs from that block
+  locally until it runs out — ~1000x fewer round trips than one call per
+  link, and link creation keeps working through a brief blip in
+  reachability. The trade: a restarted instance abandons its unused block,
+  leaving small gaps in the ID space — fine, since codes aren't meant to
+  be dense or sequential-looking to users. Redis still fronts the URL
+  cache and rate limiter, where eviction only ever causes a harmless
+  fallback to Postgres or an early rate-limit reset, never a correctness
+  bug.
 
 - **Click analytics** (`internal/analytics`): a redirect handler that
   synchronously `INSERT`ed a row per click would cap total throughput at

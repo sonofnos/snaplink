@@ -1,9 +1,18 @@
 # Documents the intended Render topology. Render's CLI has no
 # `blueprints launch`, so the actual deploy was done as separate
-# `render services create --runtime docker` / `render redis create`
-# calls against the shared free-tier Postgres this account already runs
-# (one free Postgres per account; snaplink gets its own database +
-# role inside it, same pattern as the other sonofnos services).
+# `render services create --runtime docker` calls against resources this
+# account already runs, since Render caps both free Postgres and free
+# Key Value at one instance per account:
+#   - Postgres: snaplink gets its own database + role inside the
+#     existing shared free instance (same pattern as
+#     payments-collections-service / core-banking-service).
+#   - Redis: reuses the existing free `payments-redis` Key Value
+#     instance. That instance runs `allkeys_lru` eviction, which is fine
+#     here because Redis is *only* a cache and a rate limiter for
+#     snaplink (see README) — nothing durability-sensitive is stored
+#     there. The unique-ID counter deliberately lives on a Postgres
+#     sequence instead, precisely so it isn't exposed to this eviction
+#     policy.
 services:
   - type: web
     name: snaplink
@@ -19,11 +28,6 @@ services:
           property: connectionString
       - key: REDIS_URL
         fromService:
-          name: snaplink-redis
+          name: payments-redis
           type: redis
           property: connectionString
-
-  - type: redis
-    name: snaplink-redis
-    plan: free
-    ipAllowList: []

@@ -55,12 +55,9 @@ func run(logger *slog.Logger) error {
 	if err := rdb.Ping(ctx); err != nil {
 		return errors.Join(errors.New("connect redis"), err)
 	}
-	if err := rdb.EnsureCounterFloor(ctx, 60466176); err != nil { // 62^4: guarantees codes are at least 5 chars
-		return errors.Join(errors.New("seed id counter"), err)
-	}
 
 	local := cache.New(cfg.LocalCacheSize, cfg.LocalCacheTTL)
-	ids := idgen.New(rdb, cfg.IDBlockSize)
+	ids := idgen.New(db, cfg.IDBlockSize)
 	an := analytics.New(db, rdb, cfg.AnalyticsBuffer, cfg.AnalyticsFlush, logger)
 
 	analyticsCtx, cancelAnalytics := context.WithCancel(context.Background())

@@ -102,6 +102,19 @@ func (p *Postgres) InsertClickEvents(ctx context.Context, events []ClickEvent) e
 	return nil
 }
 
+// ReserveBlock implements idgen.Reserver against the link_id_seq sequence
+// (see migrations/0001_init.sql). The sequence's INCREMENT BY fixes the
+// real block size at 1000 regardless of the size argument — a single
+// nextval() call reserves exactly one block, and the block's first ID is
+// (nextval() - 999).
+func (p *Postgres) ReserveBlock(ctx context.Context, _ uint64) (uint64, error) {
+	var next int64
+	if err := p.pool.QueryRow(ctx, `SELECT nextval('link_id_seq')`).Scan(&next); err != nil {
+		return 0, err
+	}
+	return uint64(next) - 999, nil
+}
+
 func (p *Postgres) Stats(ctx context.Context, code string) (Link, error) {
 	return p.GetLinkByCode(ctx, code)
 }
