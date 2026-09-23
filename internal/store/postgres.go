@@ -14,6 +14,7 @@ import (
 var Schema string
 
 var ErrNotFound = errors.New("store: link not found")
+var ErrConflict = errors.New("store: code already exists")
 
 type Postgres struct {
 	pool *pgxpool.Pool
@@ -52,12 +53,18 @@ func (p *Postgres) Migrate(ctx context.Context, schema string) error {
 }
 
 func (p *Postgres) InsertLink(ctx context.Context, l Link) error {
-	_, err := p.pool.Exec(ctx, `
+	tag, err := p.pool.Exec(ctx, `
 		INSERT INTO links (id, code, long_url, created_at, expires_at)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (code) DO NOTHING
 	`, l.ID, l.Code, l.LongURL, l.CreatedAt, l.ExpiresAt)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (p *Postgres) GetLinkByCode(ctx context.Context, code string) (Link, error) {

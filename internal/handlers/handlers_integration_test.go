@@ -223,3 +223,35 @@ func TestCreateWithCustomCodeConflict(t *testing.T) {
 		t.Fatalf("second create status = %d, want 409", resp2.StatusCode)
 	}
 }
+
+func TestExpiredLinkReturns404(t *testing.T) {
+	router := setup(t)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+	client := srv.Client()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+
+	resp, err := client.Post(srv.URL+"/api/v1/links", "application/json",
+		strings.NewReader(`{"url":"https://example.com/e","expires_in_seconds":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		Code string `json:"code"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&created)
+	resp.Body.Close()
+
+	live, _ := client.Get(srv.URL + "/" + created.Code)
+	live.Body.Close()
+	if live.StatusCode != http.StatusFound {
+		t.Fatalf("before expiry status = %d, want 302", live.StatusCode)
+	}
+
+	time.Sleep(2 * time.Second)
+	gone, _ := client.Get(srv.URL + "/" + created.Code)
+	gone.Body.Close()
+	if gone.StatusCode != http.StatusNotFound {
+		t.Fatalf("after expiry status = %d, want 404", gone.StatusCode)
+	}
+}

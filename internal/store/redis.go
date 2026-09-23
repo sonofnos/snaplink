@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -37,16 +39,46 @@ func (r *Redis) Close() error {
 
 // --- hot-path URL cache ---
 
-func (r *Redis) GetURL(ctx context.Context, code string) (string, error) {
+// Cached values are "<expiry unix ms, 0 = none>|<url>" so a cache hit can
+// still honour the link's own expiry without a Postgres lookup.
+func (r *Redis) GetURL(ctx context.Context, code string) (string, *time.Time, error) {
 	v, err := r.client.Get(ctx, urlKeyPrefix+code).Result()
 	if errors.Is(err, redis.Nil) {
-		return "", ErrNotFound
+		return "", nil, ErrNotFound
 	}
-	return v, err
+	if err != nil {
+		return "", nil, err
+	}
+	msStr, url, ok := strings.Cut(v, "|")
+	ms, perr := strconv.ParseInt(msStr, 10, 64)
+	if !ok || perr != nil {
+		return "", nil, ErrNotFound // unrecognised format: treat as a miss and re-fetch from Postgres
+	}
+	if ms == 0 {
+		return url, nil, nil
+	}
+	exp := time.UnixMilli(ms)
+	if !exp.After(time.Now()) {
+		return "", nil, ErrNotFound
+	}
+	return url, &exp, nil
 }
 
-func (r *Redis) SetURL(ctx context.Context, code, longURL string) error {
-	return r.client.Set(ctx, urlKeyPrefix+code, longURL, r.ttl).Err()
+// SetURL caches a code; an expiry also caps the Redis TTL so the key never
+// outlives the link.
+func (r *Redis) SetURL(ctx context.Context, code, longURL string, expiresAt *time.Time) error {
+	ttl := r.ttl
+	var ms int64
+	if expiresAt != nil {
+		ms = expiresAt.UnixMilli()
+		if d := time.Until(*expiresAt); d < ttl {
+			ttl = d
+		}
+		if ttl <= 0 {
+			return nil
+		}
+	}
+	return r.client.Set(ctx, urlKeyPrefix+code, strconv.FormatInt(ms, 10)+"|"+longURL, ttl).Err()
 }
 
 // --- live click counters ---

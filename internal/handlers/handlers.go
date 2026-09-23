@@ -36,8 +36,8 @@ type DB interface {
 }
 
 type Cache interface {
-	GetURL(ctx context.Context, code string) (string, error)
-	SetURL(ctx context.Context, code, longURL string) error
+	GetURL(ctx context.Context, code string) (string, *time.Time, error)
+	SetURL(ctx context.Context, code, longURL string, expiresAt *time.Time) error
 	GetLiveClicks(ctx context.Context, code string) (int64, error)
 	AllowCreate(ctx context.Context, ip string, limit int, window time.Duration) (bool, error)
 	Ping(ctx context.Context) error
@@ -153,14 +153,18 @@ func (h *Handler) CreateLink(w http.ResponseWriter, r *http.Request) {
 
 	link := store.Link{ID: idForRow, Code: code, LongURL: longURL, CreatedAt: time.Now().UTC(), ExpiresAt: expiresAt}
 	if err := h.db.InsertLink(ctx, link); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "custom_code already in use")
+			return
+		}
 		h.logger.Error("insert link failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := h.rdb.SetURL(ctx, code, longURL); err != nil {
+	if err := h.rdb.SetURL(ctx, code, longURL, expiresAt); err != nil {
 		h.logger.Warn("cache warm failed", "error", err)
 	}
-	h.local.Set(code, longURL)
+	h.local.Set(code, longURL, expiresAt)
 	metrics.LinksCreatedTotal.Inc()
 
 	writeJSON(w, http.StatusCreated, createResponse{
@@ -183,12 +187,15 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		metrics.CacheLookups.WithLabelValues("local", "hit").Inc()
 	} else {
 		metrics.CacheLookups.WithLabelValues("local", "miss").Inc()
-		var err error
-		longURL, err = h.rdb.GetURL(ctx, code)
+		var (
+			err error
+			exp *time.Time
+		)
+		longURL, exp, err = h.rdb.GetURL(ctx, code)
 		switch {
 		case err == nil:
 			metrics.CacheLookups.WithLabelValues("redis", "hit").Inc()
-			h.local.Set(code, longURL)
+			h.local.Set(code, longURL, exp)
 		case errors.Is(err, store.ErrNotFound):
 			metrics.CacheLookups.WithLabelValues("redis", "miss").Inc()
 			link, dbErr := h.db.GetLinkByCode(ctx, code)
@@ -198,9 +205,15 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 				http.NotFound(w, r)
 				return
 			}
+			if link.ExpiresAt != nil && !link.ExpiresAt.After(time.Now()) {
+				metrics.RedirectsTotal.WithLabelValues("not_found").Inc()
+				metrics.RedirectDuration.Observe(time.Since(start).Seconds())
+				http.NotFound(w, r)
+				return
+			}
 			longURL = link.LongURL
-			_ = h.rdb.SetURL(ctx, code, longURL)
-			h.local.Set(code, longURL)
+			_ = h.rdb.SetURL(ctx, code, longURL, link.ExpiresAt)
+			h.local.Set(code, longURL, link.ExpiresAt)
 		default:
 			h.logger.Error("redis lookup failed", "error", err)
 			metrics.RedirectsTotal.WithLabelValues("not_found").Inc()
@@ -306,9 +319,13 @@ func validateURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
+// clientIP takes the rightmost X-Forwarded-For entry: that's the one the
+// platform's own proxy appended. Earlier entries are client-supplied and
+// spoofable, which would let a caller rotate them to dodge the rate limit.
 func clientIP(r *http.Request) string {
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.TrimSpace(strings.Split(fwd, ",")[0])
+		parts := strings.Split(fwd, ",")
+		return strings.TrimSpace(parts[len(parts)-1])
 	}
 	host := r.RemoteAddr
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
