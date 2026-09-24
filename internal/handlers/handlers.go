@@ -321,6 +321,7 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 // --- health ---
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+	h.logger.Info("xff-debug", "xff", r.Header.Get("X-Forwarded-For"), "remote", r.RemoteAddr, "cf", r.Header.Get("Cf-Connecting-Ip"), "tci", r.Header.Get("True-Client-Ip"), "xri", r.Header.Get("X-Real-Ip"))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
