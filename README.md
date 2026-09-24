@@ -79,8 +79,9 @@ never touch the hot path's latency:
 
 ### What's rate-limited, and what isn't
 
-Only `POST /api/v1/links` is rate-limited (distributed, via Redis, per
-IP). The redirect path is deliberately never rate-limited — throughput
+Only the write and auth paths are rate-limited (distributed, via Redis:
+link creation per IP, or per account at 5x the limit when signed in;
+sign-in/sign-up per IP). The redirect path is deliberately never rate-limited — throughput
 there is the entire point of the service, and it's a read path with no
 abuse surface comparable to link creation.
 
@@ -145,8 +146,8 @@ system/light/dark theming, with motion that respects
   framework overhead on the hot path.
 - **Postgres** — durable `links` + `click_events` tables, schema in
   [`internal/store/migrations`](internal/store/migrations).
-- **Redis** — hot-path cache, atomic ID block reservation, distributed
-  rate limiting.
+- **Redis** — hot-path URL cache and distributed rate limiting (nothing
+  durability-sensitive lives there).
 - **In-process LRU** ([hashicorp/golang-lru](https://github.com/hashicorp/golang-lru)) —
   first line of defense before Redis is ever hit.
 - **Prometheus metrics** at `/metrics` — redirect latency histogram,
