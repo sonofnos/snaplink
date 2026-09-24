@@ -65,7 +65,7 @@ func run(logger *slog.Logger) error {
 	defer cancelAnalytics()
 	go an.Run(analyticsCtx)
 
-	h := handlers.New(db, rdb, local, ids, an, cfg.BaseURL, cfg.RateLimitPerMin, logger)
+	h := handlers.New(db, rdb, local, ids, an, cfg.BaseURL, cfg.RateLimitPerMin, cfg.TrustedProxyHops, logger)
 
 	web, err := webFiles()
 	if err != nil {

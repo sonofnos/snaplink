@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -68,11 +69,12 @@ type Handler struct {
 	baseURL   string
 	rateLimit int
 	secure    bool // Secure cookies when the public URL is https
+	proxyHops int  // trusted proxies appending to X-Forwarded-For
 	logger    *slog.Logger
 }
 
-func New(db DB, rdb Cache, local *cache.Local, ids *idgen.Allocator, an *analytics.Writer, baseURL string, rateLimit int, logger *slog.Logger) *Handler {
-	return &Handler{db: db, rdb: rdb, local: local, ids: ids, analytics: an, baseURL: strings.TrimRight(baseURL, "/"), rateLimit: rateLimit, secure: strings.HasPrefix(baseURL, "https://"), logger: logger}
+func New(db DB, rdb Cache, local *cache.Local, ids *idgen.Allocator, an *analytics.Writer, baseURL string, rateLimit, proxyHops int, logger *slog.Logger) *Handler {
+	return &Handler{db: db, rdb: rdb, local: local, ids: ids, analytics: an, baseURL: strings.TrimRight(baseURL, "/"), rateLimit: rateLimit, proxyHops: proxyHops, secure: strings.HasPrefix(baseURL, "https://"), logger: logger}
 }
 
 // Routes wires the HTTP tree. web, if non-nil, holds index.html and a
@@ -80,7 +82,7 @@ func New(db DB, rdb Cache, local *cache.Local, ids *idgen.Allocator, an *analyti
 // literal routes before the "/{code}" wildcard, so they never collide.
 func (h *Handler) Routes(web fs.FS) chi.Router {
 	r := chi.NewRouter()
-	r.Use(chimw.RequestID, chimw.RealIP, chimw.Recoverer, chimw.Timeout(15*time.Second))
+	r.Use(chimw.RequestID, chimw.Recoverer, chimw.Timeout(15*time.Second))
 	r.Get("/healthz", h.Health)
 	r.Get("/readyz", h.Ready)
 	r.Handle("/metrics", promhttp.Handler())
@@ -122,7 +124,7 @@ func (h *Handler) CreateLink(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user, signedIn := h.currentUser(r)
 
-	bucket, limit := "create:"+clientIP(r), h.rateLimit
+	bucket, limit := "create:"+h.clientIP(r), h.rateLimit
 	if signedIn {
 		bucket, limit = "create:u"+strconv.FormatInt(user.ID, 10), h.rateLimit*5
 	}
@@ -267,7 +269,7 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 	h.analytics.Record(store.ClickEvent{
 		Code:      code,
 		Timestamp: time.Now().UTC(),
-		IP:        clientIP(r),
+		IP:        h.clientIP(r),
 		UserAgent: r.UserAgent(),
 		Referrer:  r.Referer(),
 	})
@@ -321,7 +323,6 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 // --- health ---
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
-	h.logger.Info("xff-debug", "xff", r.Header.Get("X-Forwarded-For"), "remote", r.RemoteAddr, "cf", r.Header.Get("Cf-Connecting-Ip"), "tci", r.Header.Get("True-Client-Ip"), "xri", r.Header.Get("X-Real-Ip"))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
@@ -361,19 +362,32 @@ func validateURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
-// clientIP takes the rightmost X-Forwarded-For entry: that's the one the
-// platform's own proxy appended. Earlier entries are client-supplied and
-// spoofable, which would let a caller rotate them to dodge the rate limit.
-func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		parts := strings.Split(fwd, ",")
-		return strings.TrimSpace(parts[len(parts)-1])
+// clientIP returns the caller's address. Behind proxies, X-Forwarded-For is
+// "<client-supplied...>, <client>, <proxy1>, ..., <proxyN>": each trusted
+// proxy appends the address it saw, so the real client sits proxyHops entries
+// from the right and anything left of it is attacker-controlled. Walking from
+// the right (no allocation, this runs on every redirect) means a spoofed
+// header can't choose the rate-limit bucket or the recorded visitor.
+func (h *Handler) clientIP(r *http.Request) string {
+	if h.proxyHops > 0 {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			for n := 0; n < h.proxyHops; n++ {
+				i := strings.LastIndexByte(fwd, ',')
+				if i < 0 {
+					return strings.TrimSpace(fwd)
+				}
+				fwd = fwd[:i]
+			}
+			if i := strings.LastIndexByte(fwd, ','); i >= 0 {
+				fwd = fwd[i+1:]
+			}
+			return strings.TrimSpace(fwd)
+		}
 	}
-	host := r.RemoteAddr
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		host = host[:idx]
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	return host
+	return r.RemoteAddr
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

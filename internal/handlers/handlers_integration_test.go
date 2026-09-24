@@ -83,7 +83,7 @@ func setup(t *testing.T) http.Handler {
 	t.Cleanup(cancel)
 	go an.Run(analyticsCtx)
 
-	h := handlers.New(db, rdb, local, ids, an, "http://localhost:8080", 1000, logger)
+	h := handlers.New(db, rdb, local, ids, an, "http://localhost:8080", 1000, 2, logger)
 	return h.Routes(nil)
 }
 

@@ -81,7 +81,7 @@ func (h *Handler) readCredentials(w http.ResponseWriter, r *http.Request) (crede
 	if !requireJSON(w, r) {
 		return credentials{}, false
 	}
-	ok, err := h.rdb.Allow(r.Context(), "auth:"+clientIP(r), authPerMinute, time.Minute)
+	ok, err := h.rdb.Allow(r.Context(), "auth:"+h.clientIP(r), authPerMinute, time.Minute)
 	if err == nil && !ok {
 		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in a minute")
 		return credentials{}, false
