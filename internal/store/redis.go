@@ -81,6 +81,10 @@ func (r *Redis) SetURL(ctx context.Context, code, longURL string, expiresAt *tim
 	return r.client.Set(ctx, urlKeyPrefix+code, strconv.FormatInt(ms, 10)+"|"+longURL, ttl).Err()
 }
 
+func (r *Redis) DelURL(ctx context.Context, code string) error {
+	return r.client.Del(ctx, urlKeyPrefix+code).Err()
+}
+
 // --- live click counters ---
 
 func (r *Redis) IncrClicks(ctx context.Context, code string, n int64) error {
@@ -95,13 +99,12 @@ func (r *Redis) GetLiveClicks(ctx context.Context, code string) (int64, error) {
 	return v, err
 }
 
-// --- distributed rate limiting (fixed window, per IP) ---
-// Only guards the write path (link creation); the redirect hot path is
-// intentionally never rate limited here since throughput on that path is
-// the entire point of the service.
+// --- distributed rate limiting (fixed window, per bucket) ---
+// Guards only the write and auth paths; the redirect hot path is
+// intentionally never rate limited since throughput there is the point.
 
-func (r *Redis) AllowCreate(ctx context.Context, ip string, limit int, window time.Duration) (bool, error) {
-	key := rateLimitPrefix + ip
+func (r *Redis) Allow(ctx context.Context, bucket string, limit int, window time.Duration) (bool, error) {
+	key := rateLimitPrefix + bucket
 	count, err := r.client.Incr(ctx, key).Result()
 	if err != nil {
 		return false, err

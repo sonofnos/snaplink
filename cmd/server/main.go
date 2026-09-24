@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -42,7 +43,7 @@ func run(logger *slog.Logger) error {
 	}
 	defer db.Close()
 
-	if err := db.Migrate(ctx, store.Schema); err != nil {
+	if err := db.Migrate(ctx); err != nil {
 		return errors.Join(errors.New("run migrations"), err)
 	}
 
@@ -66,12 +67,13 @@ func run(logger *slog.Logger) error {
 
 	h := handlers.New(db, rdb, local, ids, an, cfg.BaseURL, cfg.RateLimitPerMin, logger)
 
-	webRoot, err := webRootHandler()
+	web, err := webFiles()
 	if err != nil {
 		return err
 	}
+	go retention(analyticsCtx, db, logger)
 
-	r := h.Routes(webRoot)
+	r := h.Routes(web)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -102,14 +104,29 @@ func run(logger *slog.Logger) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// webRootHandler serves the embedded landing page at exactly "/".
-func webRootHandler() (http.Handler, error) {
-	page, err := webFS.ReadFile("web/index.html")
-	if err != nil {
-		return nil, err
+// webFiles returns the embedded web/ directory as the fs root.
+func webFiles() (fs.FS, error) {
+	return fs.Sub(webFS, "web")
+}
+
+// retention keeps the free-tier database bounded: click history is capped
+// at 90 days and stale sessions are dropped.
+func retention(ctx context.Context, db *store.Postgres, logger *slog.Logger) {
+	t := time.NewTicker(6 * time.Hour)
+	defer t.Stop()
+	for {
+		if n, err := db.PurgeOldClickEvents(ctx, 90*24*time.Hour); err != nil {
+			logger.Error("click retention failed", "error", err)
+		} else if n > 0 {
+			logger.Info("purged old click events", "rows", n)
+		}
+		if err := db.PurgeExpiredSessions(ctx); err != nil {
+			logger.Error("session purge failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(page)
-	}), nil
 }

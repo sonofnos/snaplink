@@ -5,8 +5,10 @@ package handlers_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -61,7 +63,7 @@ func setup(t *testing.T) http.Handler {
 		t.Fatalf("connect postgres: %v", err)
 	}
 	t.Cleanup(db.Close)
-	if err := db.Migrate(ctx, store.Schema); err != nil {
+	if err := db.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -83,6 +85,31 @@ func setup(t *testing.T) http.Handler {
 
 	h := handlers.New(db, rdb, local, ids, an, "http://localhost:8080", 1000, logger)
 	return h.Routes(nil)
+}
+
+// signedInClient returns a client (with cookie jar) signed up as a new user.
+func signedInClient(t *testing.T, srvURL, email string) *http.Client {
+	t.Helper()
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Post(srvURL+"/api/v1/auth/signup", "application/json",
+		strings.NewReader(fmt.Sprintf(`{"email":%q,"password":"correct horse battery"}`, email)))
+	if err != nil {
+		t.Fatalf("signup: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("signup status = %d, want 201", resp.StatusCode)
+	}
+	return c
+}
+
+func decode(t *testing.T, resp *http.Response, v any) {
+	t.Helper()
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 }
 
 type testingWriter struct{ t *testing.T }
@@ -202,9 +229,10 @@ func TestCreateWithCustomCodeConflict(t *testing.T) {
 	router := setup(t)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
+	c := signedInClient(t, srv.URL, "alias@example.com")
 
 	first := strings.NewReader(`{"url":"https://example.com/a","custom_code":"mycode"}`)
-	resp1, err := srv.Client().Post(srv.URL+"/api/v1/links", "application/json", first)
+	resp1, err := c.Post(srv.URL+"/api/v1/links", "application/json", first)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -214,7 +242,7 @@ func TestCreateWithCustomCodeConflict(t *testing.T) {
 	}
 
 	second := strings.NewReader(`{"url":"https://example.com/b","custom_code":"mycode"}`)
-	resp2, err := srv.Client().Post(srv.URL+"/api/v1/links", "application/json", second)
+	resp2, err := c.Post(srv.URL+"/api/v1/links", "application/json", second)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -222,14 +250,198 @@ func TestCreateWithCustomCodeConflict(t *testing.T) {
 	if resp2.StatusCode != http.StatusConflict {
 		t.Fatalf("second create status = %d, want 409", resp2.StatusCode)
 	}
+
+	reserved, _ := c.Post(srv.URL+"/api/v1/links", "application/json", strings.NewReader(`{"url":"https://example.com/c","custom_code":"static"}`))
+	reserved.Body.Close()
+	if reserved.StatusCode != http.StatusConflict {
+		t.Fatalf("reserved code status = %d, want 409", reserved.StatusCode)
+	}
+}
+
+func TestAnonymousCannotUseAccountFeatures(t *testing.T) {
+	router := setup(t)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, body := range []string{
+		`{"url":"https://example.com/a","custom_code":"anonalias"}`,
+		`{"url":"https://example.com/a","expires_in_seconds":60}`,
+	} {
+		resp, err := srv.Client().Post(srv.URL+"/api/v1/links", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("anonymous %s -> %d, want 401", body, resp.StatusCode)
+		}
+	}
+	for _, path := range []string{"/api/v1/me/links"} {
+		resp, _ := srv.Client().Get(srv.URL + path)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("anonymous GET %s -> %d, want 401", path, resp.StatusCode)
+		}
+	}
+}
+
+func TestAuthRules(t *testing.T) {
+	router := setup(t)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+	signedInClient(t, srv.URL, "dupe@example.com")
+
+	post := func(path, ct, body string) int {
+		resp, err := srv.Client().Post(srv.URL+path, ct, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := post("/api/v1/auth/signup", "application/json", `{"email":"dupe@example.com","password":"correct horse battery"}`); got != http.StatusConflict {
+		t.Errorf("duplicate signup = %d, want 409", got)
+	}
+	if got := post("/api/v1/auth/signup", "application/json", `{"email":"short@example.com","password":"short"}`); got != http.StatusBadRequest {
+		t.Errorf("short password = %d, want 400", got)
+	}
+	if got := post("/api/v1/auth/signup", "application/json", `{"email":"not-an-email","password":"correct horse battery"}`); got != http.StatusBadRequest {
+		t.Errorf("bad email = %d, want 400", got)
+	}
+	if got := post("/api/v1/auth/login", "application/json", `{"email":"dupe@example.com","password":"wrong password here"}`); got != http.StatusUnauthorized {
+		t.Errorf("wrong password = %d, want 401", got)
+	}
+	if got := post("/api/v1/auth/login", "application/json", `{"email":"nobody@example.com","password":"wrong password here"}`); got != http.StatusUnauthorized {
+		t.Errorf("unknown user = %d, want 401", got)
+	}
+	if got := post("/api/v1/auth/login", "application/x-www-form-urlencoded", `email=dupe@example.com&password=correct+horse+battery`); got != http.StatusUnsupportedMediaType {
+		t.Errorf("form-encoded login (CSRF guard) = %d, want 415", got)
+	}
+}
+
+func TestDashboardFlow(t *testing.T) {
+	router := setup(t)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+	alice := signedInClient(t, srv.URL, "alice@example.com")
+	bob := signedInClient(t, srv.URL, "bob@example.com")
+
+	resp, err := alice.Post(srv.URL+"/api/v1/links", "application/json", strings.NewReader(`{"url":"https://example.com/alice","custom_code":"alice-link"}`))
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %v %v", err, resp)
+	}
+	resp.Body.Close()
+
+	// Three clicks (with a referrer), then wait for the async flush.
+	for i := 0; i < 3; i++ {
+		req, _ := http.NewRequest("GET", srv.URL+"/alice-link", nil)
+		req.Header.Set("Referer", "https://www.news.example/story")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36")
+		r, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+	}
+
+	type analytics struct {
+		Total    int64                    `json:"total"`
+		Uniques  int64                    `json:"uniques"`
+		Daily    []struct{ Clicks int64 } `json:"daily"`
+		Browsers []struct {
+			Label string
+			Count int64
+		} `json:"browsers"`
+		Referrers []struct {
+			Label string
+			Count int64
+		} `json:"referrers"`
+	}
+	var a analytics
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		r, _ := alice.Get(srv.URL + "/api/v1/me/links/alice-link/analytics")
+		a = analytics{}
+		decode(t, r, &a)
+		if a.Total >= 3 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if a.Total != 3 || len(a.Daily) != 30 {
+		t.Fatalf("analytics total=%d days=%d, want 3 and 30", a.Total, len(a.Daily))
+	}
+	if len(a.Browsers) == 0 || a.Browsers[0].Label != "Chrome" {
+		t.Errorf("browsers = %+v, want Chrome first", a.Browsers)
+	}
+	if len(a.Referrers) == 0 || a.Referrers[0].Label != "news.example" {
+		t.Errorf("referrers = %+v, want news.example (www stripped)", a.Referrers)
+	}
+
+	var mine []struct{ Code string }
+	r, _ := alice.Get(srv.URL + "/api/v1/me/links")
+	decode(t, r, &mine)
+	if len(mine) != 1 || mine[0].Code != "alice-link" {
+		t.Fatalf("alice's links = %+v", mine)
+	}
+	r, _ = bob.Get(srv.URL + "/api/v1/me/links")
+	var bobs []struct{ Code string }
+	decode(t, r, &bobs)
+	if len(bobs) != 0 {
+		t.Errorf("bob sees %d links, want 0", len(bobs))
+	}
+
+	// Ownership: bob can neither read analytics for, nor delete, alice's link.
+	r, _ = bob.Get(srv.URL + "/api/v1/me/links/alice-link/analytics")
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Errorf("bob analytics = %d, want 404", r.StatusCode)
+	}
+	req, _ := http.NewRequest("DELETE", srv.URL+"/api/v1/me/links/alice-link", nil)
+	req.Header.Set("Content-Type", "application/json")
+	r, _ = bob.Do(req)
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Errorf("bob delete = %d, want 404", r.StatusCode)
+	}
+
+	// Owner delete removes the link everywhere, caches included.
+	req, _ = http.NewRequest("DELETE", srv.URL+"/api/v1/me/links/alice-link", nil)
+	req.Header.Set("Content-Type", "application/json")
+	r, _ = alice.Do(req)
+	r.Body.Close()
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("alice delete = %d, want 204", r.StatusCode)
+	}
+	r, _ = srv.Client().Get(srv.URL + "/alice-link")
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Errorf("deleted link redirect = %d, want 404", r.StatusCode)
+	}
+
+	// Logout invalidates the session server-side.
+	req, _ = http.NewRequest("POST", srv.URL+"/api/v1/auth/logout", nil)
+	req.Header.Set("Content-Type", "application/json")
+	r, _ = alice.Do(req)
+	r.Body.Close()
+	r, _ = alice.Get(srv.URL + "/api/v1/auth/me")
+	var me struct{ Email string }
+	decode(t, r, &me)
+	if me.Email != "" {
+		t.Errorf("after logout /auth/me email = %q, want empty", me.Email)
+	}
+	r, _ = alice.Get(srv.URL + "/api/v1/me/links")
+	r.Body.Close()
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Errorf("after logout /me/links = %d, want 401", r.StatusCode)
+	}
 }
 
 func TestExpiredLinkReturns404(t *testing.T) {
 	router := setup(t)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
-	client := srv.Client()
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+	client := signedInClient(t, srv.URL, "expiry@example.com")
 
 	resp, err := client.Post(srv.URL+"/api/v1/links", "application/json",
 		strings.NewReader(`{"url":"https://example.com/e","expires_in_seconds":1}`))

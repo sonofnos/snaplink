@@ -2,16 +2,17 @@ package store
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed migrations/0001_init.sql
-var Schema string
+//go:embed migrations/*.sql
+var migrationFS embed.FS
 
 var ErrNotFound = errors.New("store: link not found")
 var ErrConflict = errors.New("store: code already exists")
@@ -47,17 +48,36 @@ func (p *Postgres) Close() {
 	p.pool.Close()
 }
 
-func (p *Postgres) Migrate(ctx context.Context, schema string) error {
-	_, err := p.pool.Exec(ctx, schema)
-	return err
+// Migrate applies every embedded migration in filename order. Each file is
+// idempotent (IF NOT EXISTS), so re-running on every boot is safe.
+func (p *Postgres) Migrate(ctx context.Context) error {
+	entries, err := migrationFS.ReadDir("migrations")
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		sql, err := migrationFS.ReadFile("migrations/" + n)
+		if err != nil {
+			return err
+		}
+		if _, err := p.pool.Exec(ctx, string(sql)); err != nil {
+			return errors.Join(errors.New("migration "+n), err)
+		}
+	}
+	return nil
 }
 
 func (p *Postgres) InsertLink(ctx context.Context, l Link) error {
 	tag, err := p.pool.Exec(ctx, `
-		INSERT INTO links (id, code, long_url, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO links (id, code, long_url, created_at, expires_at, user_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (code) DO NOTHING
-	`, l.ID, l.Code, l.LongURL, l.CreatedAt, l.ExpiresAt)
+	`, l.ID, l.Code, l.LongURL, l.CreatedAt, l.ExpiresAt, l.UserID)
 	if err != nil {
 		return err
 	}
@@ -70,9 +90,9 @@ func (p *Postgres) InsertLink(ctx context.Context, l Link) error {
 func (p *Postgres) GetLinkByCode(ctx context.Context, code string) (Link, error) {
 	var l Link
 	err := p.pool.QueryRow(ctx, `
-		SELECT id, code, long_url, created_at, expires_at, clicks
+		SELECT id, code, long_url, created_at, expires_at, clicks, user_id
 		FROM links WHERE code = $1
-	`, code).Scan(&l.ID, &l.Code, &l.LongURL, &l.CreatedAt, &l.ExpiresAt, &l.Clicks)
+	`, code).Scan(&l.ID, &l.Code, &l.LongURL, &l.CreatedAt, &l.ExpiresAt, &l.Clicks, &l.UserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Link{}, ErrNotFound
 	}

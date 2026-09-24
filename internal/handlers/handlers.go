@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,19 +29,33 @@ import (
 	"github.com/sonofnos/snaplink/internal/store"
 )
 
+var reservedCodes = map[string]bool{
+	"api": true, "static": true, "healthz": true, "readyz": true, "metrics": true,
+	"app": true, "login": true, "signup": true, "dashboard": true, "favicon.ico": true, "robots.txt": true,
+}
+
 var customCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{3,32}$`)
 
 type DB interface {
 	InsertLink(ctx context.Context, l store.Link) error
 	GetLinkByCode(ctx context.Context, code string) (store.Link, error)
 	Healthy(ctx context.Context) error
+	CreateUser(ctx context.Context, email, passwordHash string) (store.User, error)
+	GetUserByEmail(ctx context.Context, email string) (store.User, error)
+	CreateSession(ctx context.Context, tokenHash []byte, userID int64, expires time.Time) error
+	GetSessionUser(ctx context.Context, tokenHash []byte) (store.User, error)
+	DeleteSession(ctx context.Context, tokenHash []byte) error
+	ListLinksByUser(ctx context.Context, userID int64, limit int) ([]store.Link, error)
+	DeleteLink(ctx context.Context, userID int64, code string) (bool, error)
+	LinkAnalytics(ctx context.Context, code string, days int) (store.Analytics, error)
 }
 
 type Cache interface {
 	GetURL(ctx context.Context, code string) (string, *time.Time, error)
 	SetURL(ctx context.Context, code, longURL string, expiresAt *time.Time) error
 	GetLiveClicks(ctx context.Context, code string) (int64, error)
-	AllowCreate(ctx context.Context, ip string, limit int, window time.Duration) (bool, error)
+	Allow(ctx context.Context, bucket string, limit int, window time.Duration) (bool, error)
+	DelURL(ctx context.Context, code string) error
 	Ping(ctx context.Context) error
 }
 
@@ -51,17 +67,18 @@ type Handler struct {
 	analytics *analytics.Writer
 	baseURL   string
 	rateLimit int
+	secure    bool // Secure cookies when the public URL is https
 	logger    *slog.Logger
 }
 
 func New(db DB, rdb Cache, local *cache.Local, ids *idgen.Allocator, an *analytics.Writer, baseURL string, rateLimit int, logger *slog.Logger) *Handler {
-	return &Handler{db: db, rdb: rdb, local: local, ids: ids, analytics: an, baseURL: strings.TrimRight(baseURL, "/"), rateLimit: rateLimit, logger: logger}
+	return &Handler{db: db, rdb: rdb, local: local, ids: ids, analytics: an, baseURL: strings.TrimRight(baseURL, "/"), rateLimit: rateLimit, secure: strings.HasPrefix(baseURL, "https://"), logger: logger}
 }
 
-// Routes wires the HTTP tree. indexFS, if non-nil, serves the static
-// landing page at "/"; chi resolves the literal "/" route before the
-// "/{code}" wildcard, so the two never collide.
-func (h *Handler) Routes(indexFS http.Handler) chi.Router {
+// Routes wires the HTTP tree. web, if non-nil, holds index.html and a
+// static/ directory served at "/" and "/static/". chi resolves those
+// literal routes before the "/{code}" wildcard, so they never collide.
+func (h *Handler) Routes(web fs.FS) chi.Router {
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID, chimw.RealIP, chimw.Recoverer, chimw.Timeout(15*time.Second))
 	r.Get("/healthz", h.Health)
@@ -70,9 +87,17 @@ func (h *Handler) Routes(indexFS http.Handler) chi.Router {
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Post("/links", h.CreateLink)
 		api.Get("/links/{code}", h.Stats)
+		api.Post("/auth/signup", h.Signup)
+		api.Post("/auth/login", h.Login)
+		api.Post("/auth/logout", h.Logout)
+		api.Get("/auth/me", h.Me)
+		api.Get("/me/links", h.ListMyLinks)
+		api.Delete("/me/links/{code}", h.DeleteMyLink)
+		api.Get("/me/links/{code}/analytics", h.LinkAnalytics)
 	})
-	if indexFS != nil {
-		r.Get("/", indexFS.ServeHTTP)
+	if web != nil {
+		r.Get("/", serveIndex(web))
+		r.Handle("/static/*", staticHandler(web))
 	}
 	r.Get("/{code}", h.Redirect)
 	return r
@@ -95,9 +120,13 @@ type createResponse struct {
 
 func (h *Handler) CreateLink(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	ip := clientIP(r)
+	user, signedIn := h.currentUser(r)
 
-	allowed, err := h.rdb.AllowCreate(ctx, ip, h.rateLimit, time.Minute)
+	bucket, limit := "create:"+clientIP(r), h.rateLimit
+	if signedIn {
+		bucket, limit = "create:u"+strconv.FormatInt(user.ID, 10), h.rateLimit*5
+	}
+	allowed, err := h.rdb.Allow(ctx, bucket, limit, time.Minute)
 	if err != nil {
 		h.logger.Error("rate limiter check failed", "error", err)
 		// Fail open: an unreachable Redis shouldn't take down link creation.
@@ -110,6 +139,11 @@ func (h *Handler) CreateLink(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	if !signedIn && (req.CustomCode != "" || req.ExpiresIn > 0) {
+		writeError(w, http.StatusUnauthorized, "sign in to use custom aliases and link expiry")
 		return
 	}
 
@@ -132,6 +166,10 @@ func (h *Handler) CreateLink(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "custom_code must be 3-32 characters: letters, digits, - or _")
 			return
 		}
+		if reservedCodes[strings.ToLower(code)] {
+			writeError(w, http.StatusConflict, "custom_code is reserved")
+			return
+		}
 		if _, err := h.db.GetLinkByCode(ctx, code); err == nil {
 			writeError(w, http.StatusConflict, "custom_code already in use")
 			return
@@ -152,6 +190,9 @@ func (h *Handler) CreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	link := store.Link{ID: idForRow, Code: code, LongURL: longURL, CreatedAt: time.Now().UTC(), ExpiresAt: expiresAt}
+	if signedIn {
+		link.UserID = &user.ID
+	}
 	if err := h.db.InsertLink(ctx, link); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "custom_code already in use")

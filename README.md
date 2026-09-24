@@ -95,14 +95,14 @@ overhead a real deployment wouldn't have).
 ```
 $ CODE=<code> k6 run loadtest/redirect.js
 ...
-http_req_duration..: avg=5.41ms p(90)=9.55ms p(95)=12.12ms p(99)=22.78ms
-http_req_failed....: 0.00%   0 out of 1,641,659
-http_reqs..........: 1,641,659   23,457.9/s
+http_req_duration..: avg=5.67ms p(90)=9.77ms p(95)=12.79ms p(99)=29.12ms
+http_req_failed....: 0.00%   0 out of 1,566,805
+http_reqs..........: 1,566,805   22,383/s
 ```
 
-**~23,500 redirects/sec, zero failures, p99 = 22.8ms, from one instance
-on a laptop.** That's ~2 billion requests/day from a single container —
-about 20x the 100M/day bar — before counting that the service is
+**~22,400 redirects/sec, zero failures, p99 = 29ms, from one instance
+on a laptop.** That's ~1.9 billion requests/day from a single container —
+nearly 20x the 100M/day bar — before counting that the service is
 stateless and built to scale horizontally: any number of instances can
 run behind a load balancer, sharing the same Redis cache and Postgres
 counter, with no coordination between instances beyond that. Real
@@ -111,6 +111,33 @@ a load balancer for redundancy, not because one instance can't keep up.
 
 Reproduce it yourself: `make up`, create a link, then
 `CODE=<code> make loadtest`.
+
+## Accounts, dashboard and analytics
+
+Anyone can shorten a link. Signing up (email + password) unlocks:
+
+- **Custom aliases** and **link expiry** (1 hour to 30 days).
+- A **dashboard** listing your links with click counts, copy and delete.
+- Per-link **analytics** over the last 30 days: clicks per day, unique
+  visitors, browsers, operating systems and referrers.
+
+Auth is server-side sessions, not JWTs: a random 256-bit token in an
+`HttpOnly`, `SameSite=Lax` (and `Secure` over https) cookie, stored in
+Postgres as a SHA-256 hash so a database leak can't be replayed as
+sessions, and revocable on logout. Passwords are bcrypt. Login spends the
+same bcrypt time for unknown emails as known ones, all auth and mutating
+endpoints require `Content-Type: application/json` (a browser can't send
+that cross-site without a CORS preflight, which is never granted), and
+sign-in/sign-up are rate limited per IP. Analytics and delete are
+ownership-checked, and answer 404 whether a link is someone else's or
+doesn't exist. Click history is pruned after 90 days to stay inside the
+free 1 GB database.
+
+The UI (`cmd/server/web`, no build step) uses the design tokens of
+[portfolio.sonofnos.com](https://portfolio.sonofnos.com): the same
+palette, type (Instrument Serif / Manrope / IBM Plex Mono), and
+system/light/dark theming, with motion that respects
+`prefers-reduced-motion`.
 
 ## What's actually in the box
 
@@ -133,8 +160,13 @@ Reproduce it yourself: `make up`, create a link, then
 
 ```
 POST /api/v1/links
-  { "url": "https://example.com/very/long/path", "custom_code": "optional", "expires_in_seconds": 3600 }
-  → 201 { "short_url", "code", "long_url", "expires_at" }
+  { "url": "https://example.com/very/long/path", "custom_code": "optional*", "expires_in_seconds": 3600* }
+  → 201 { "short_url", "code", "long_url", "expires_at" }      (* requires sign-in)
+
+POST /api/v1/auth/signup | /auth/login | /auth/logout,  GET /api/v1/auth/me
+GET  /api/v1/me/links                      your links
+GET  /api/v1/me/links/{code}/analytics     30-day analytics (owner only)
+DELETE /api/v1/me/links/{code}             delete (owner only)
 
 GET /{code}          → 302 redirect (or 404)
 GET /api/v1/links/{code} → { "code", "long_url", "created_at", "expires_at", "clicks" }

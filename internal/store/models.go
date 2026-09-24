@@ -9,6 +9,32 @@ type Link struct {
 	CreatedAt time.Time
 	ExpiresAt *time.Time
 	Clicks    int64
+	UserID    *int64
+}
+
+type User struct {
+	ID           int64
+	Email        string
+	PasswordHash string
+	CreatedAt    time.Time
+}
+
+type DayCount struct {
+	Day    time.Time
+	Clicks int64
+}
+
+type Count struct {
+	Label string
+	Count int64
+}
+
+type Analytics struct {
+	Total     int64
+	Uniques   int64
+	Daily     []DayCount
+	UserAgent []Count // raw user agents; classified by the handler
+	Referrers []Count // raw referrer URLs; reduced to hosts by the handler
 }
 
 // ClickEvent is a single redirect hit, queued in memory and batch-written

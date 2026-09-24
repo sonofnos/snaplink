@@ -44,3 +44,7 @@ func (l *Local) Set(code, longURL string, expiresAt *time.Time) {
 	}
 	l.c.Add(code, e)
 }
+
+func (l *Local) Delete(code string) {
+	l.c.Remove(code)
+}
