@@ -1,175 +1,153 @@
-<!doctype html>
-<html lang="en" data-theme="system">
+<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Snaplink — short links that stay fast at any scale</title>
-<meta name="description" content="A URL shortener engineered for high-throughput redirects: layered caching, durable ID allocation, async analytics. Measured at ~22,400 redirects/sec on a single container." />
-<meta name="theme-color" content="#0f0d0b" id="theme-color-meta" />
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Snaplink</title>
+<meta name="description" content="Snaplink — a URL shortener built for the redirect path. Chris Emeka." />
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f9f9f7" />
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111111" />
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/static/app.css" />
-<script src="/static/theme.js"></script>
 </head>
 <body>
-<div class="page">
 
-  <header class="top">
-    <a class="brand" href="#/" aria-label="Snaplink home"><img src="/static/favicon.svg" alt="" width="30" height="30" /><span>Snaplink</span></a>
-    <nav class="links" aria-label="Primary" id="nav-links">
-      <a href="#how">How it works</a>
-      <a href="#features">Features</a>
-      <a href="#performance">Performance</a>
-    </nav>
-    <div class="top-actions">
-      <button class="theme-toggle-btn" id="theme-toggle" type="button" aria-label="Change theme"><span class="theme-icon" id="theme-icon"></span></button>
-      <span id="auth-slot"></span>
+<main id="view-landing">
+<div class="ascii" aria-hidden="true">███████╗███╗   ██╗ █████╗ ██████╗ ██╗     ██╗███╗   ██╗██╗  ██╗
+██╔════╝████╗  ██║██╔══██╗██╔══██╗██║     ██║████╗  ██║██║ ██╔╝
+███████╗██╔██╗ ██║███████║██████╔╝██║     ██║██╔██╗ ██║█████╔╝
+╚════██║██║╚██╗██║██╔══██║██╔═══╝ ██║     ██║██║╚██╗██║██╔═██╗
+███████║██║ ╚████║██║  ██║██║     ███████╗██║██║ ╚████║██║  ██╗
+╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝</div>
+
+  <h1>Snaplink</h1>
+
+  <p class="handle" title="snap · link = short links, fast"><span>snap</span><span class="handle-dot">·</span><span class="handle-nos">l<span class="handle-zero">1</span>nk</span><span class="handle-reveal"> <span class="handle-meaning">= short links, fast</span></span></p>
+
+  <p>URL shortener.</p>
+  <p class="muted">Built for the redirect path. Links are served from memory, then Redis, then Postgres, so the busiest ones never touch the database.</p>
+
+  <form class="prompt" id="shorten-form" novalidate>
+    <label class="ps" for="url">$</label>
+    <input type="url" id="url" placeholder="paste a long url" autocomplete="off" spellcheck="false" required />
+    <button type="submit" id="shorten-btn">shorten</button>
+  </form>
+  <p class="error" id="shorten-error" role="alert" hidden></p>
+  <p class="result" id="result" hidden aria-live="polite"><span class="muted">→</span> <a id="result-link" href="#" target="_blank" rel="noopener"></a><span class="sep">|</span><button type="button" class="link" id="copy-result">copy</button></p>
+  <p class="muted small" id="account-note">custom aliases, expiry and click analytics need an <button type="button" class="link underline" data-open-auth="signup">account</button>.</p>
+
+  <hr />
+
+  <nav id="landing-nav">
+    <a href="#how">how it works</a><span class="sep">|</span>
+    <a href="#numbers">numbers</a><span class="sep">|</span>
+    <a href="#inside">inside</a><span class="sep">|</span>
+    <a href="https://github.com/sonofnos/snaplink" target="_blank" rel="noopener">source</a><span class="sep">|</span>
+    <span id="auth-slot"></span>
+  </nav>
+
+  <hr />
+
+  <section id="how">
+    <h2>how it works</h2>
+    <p class="muted">A redirect walks down three caches and stops at the first one that has the link. Targets never change, so nothing needs invalidating.</p>
+    <pre class="trace" id="trace" aria-label="A request for a short link checks the in-process cache, then Redis, then Postgres, and returns a 302 from the first layer that has it."></pre>
+  </section>
+
+  <hr />
+
+  <section id="numbers">
+    <h2>numbers</h2>
+    <p class="muted">A hundred million requests a day is about 1,160 a second. One container measured:</p>
+    <dl class="table" id="stats">
+      <div><dt>redirects / sec</dt><dd data-count="22383">22,383</dd></div>
+      <div><dt>p99 latency</dt><dd><span data-count="29.1" data-dec="1">29.1</span> ms</dd></div>
+      <div><dt>errors</dt><dd><span data-count="0">0</span> of 1,566,805</dd></div>
+      <div><dt>per day, one box</dt><dd>≈ <span data-count="1.9" data-dec="1">1.9</span> billion</dd></div>
+    </dl>
+    <div class="bars" id="bars" aria-label="Measured 22,383 requests per second against a target of 1,157, about 19 times higher">
+      <div><span class="bl">100M/day</span><span class="bt" data-fill="1"></span><span class="bv">1,157/s</span></div>
+      <div><span class="bl">measured</span><span class="bt" data-fill="24"></span><span class="bv">22,383/s</span></div>
     </div>
-  </header>
+    <p class="muted small">k6, 200 virtual users, one container on a laptop with the load generator on the same machine. The free-tier deployment sleeps when idle and has far less CPU, so this measures the design, not the hosting.</p>
+  </section>
 
-  <main id="view-landing">
-    <section class="hero">
-      <div class="hero-copy">
-        <p class="eyebrow reveal">URL shortener · engineered for scale</p>
-        <h1 class="hero-title reveal">Short links that stay <em>fast</em> at any scale.</h1>
-        <p class="hero-text reveal">Paste a long URL, get a short one. Redirects are served from an in-process cache, then Redis, with Postgres as the source of truth, so the busiest links never touch the database.</p>
+  <hr />
 
-        <form class="shorten reveal" id="shorten-form" novalidate>
-          <label class="sr-only" for="url">Long URL</label>
-          <input type="url" id="url" name="url" placeholder="https://example.com/a/very/long/path" autocomplete="off" required />
-          <button class="btn solid" type="submit" id="shorten-btn">Shorten</button>
-        </form>
-        <p class="form-error" id="shorten-error" role="alert" hidden></p>
-        <div class="result" id="result" hidden aria-live="polite">
-          <a id="result-link" href="#" target="_blank" rel="noopener"></a>
-          <button class="btn ghost sm" type="button" id="copy-result">Copy</button>
-        </div>
-        <div class="locked reveal" id="locked-row">
-          <span class="locked-label">With an account</span>
-          <button type="button" class="chip" data-open-auth="signup"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Custom aliases</button>
-          <button type="button" class="chip" data-open-auth="signup"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Link expiry</button>
-          <button type="button" class="chip" data-open-auth="signup"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Click analytics</button>
-        </div>
-      </div>
+  <section id="inside">
+    <h2>inside</h2>
+    <ul class="list">
+      <li><span>layered cache</span><span class="muted">in-process LRU, then Redis, then Postgres. Expiry travels with the cached value.</span></li>
+      <li><span>durable ids</span><span class="muted">each instance reserves 1,000 ids at a time from a Postgres sequence. A cache can evict a counter; a sequence can't.</span></li>
+      <li><span>async analytics</span><span class="muted">clicks are queued and written in batches. A slow database drops analytics, never redirects.</span></li>
+      <li><span>guarded writes</span><span class="muted">link creation and sign-in are rate limited through Redis. Redirects never are.</span></li>
+      <li><span>accounts</span><span class="muted">server-side sessions, bcrypt, custom aliases, expiry, per-link analytics.</span></li>
+    </ul>
+  </section>
 
-      <aside class="hero-panel reveal" aria-label="Measured performance">
-        <p class="panel-title"><span class="live-dot" aria-hidden="true"></span>Measured, not promised</p>
-        <div class="hero-metrics">
-          <div class="metric"><strong><span data-count="22383" data-format="int">22,383</span></strong><span>redirects / second</span></div>
-          <div class="metric"><strong><span data-count="29.1" data-format="dec1">29.1</span><small>ms</small></strong><span>p99 latency</span></div>
-          <div class="metric"><strong><span data-count="0" data-format="int">0</span><small>%</small></strong><span>errors in 1.57M requests</span></div>
-          <div class="metric"><strong>≈<span data-count="1.9" data-format="dec1">1.9</span><small>B</small></strong><span>redirects / day, one instance</span></div>
-        </div>
-        <p class="panel-note">k6, 200 virtual users, a single container on a laptop. The 100M/day bar is ~1,160 req/s.</p>
-      </aside>
-    </section>
+  <hr />
 
-    <div class="ticker" aria-hidden="true"><div class="ticker-track" id="ticker-track"></div></div>
-
-    <section id="how" class="section">
-      <p class="section-index reveal"><b>01</b> / The redirect path</p>
-      <h2 class="section-title reveal">Most requests never leave the process.</h2>
-      <p class="section-copy reveal">A redirect walks down a cache hierarchy and stops at the first hit. Link targets never change, so there is nothing to invalidate, only to warm.</p>
-      <div class="flow reveal" id="flow" role="img" aria-label="A request travels from the browser to the in-process cache, then Redis, then Postgres, stopping at the first layer that has the link.">
-        <div class="flow-row" id="flow-row">
-          <div class="node" data-i="0"><b>Browser</b><span>GET /aB3xY</span></div>
-          <div class="node" data-i="1"><b>In-process LRU</b><span>~µs · per instance</span></div>
-          <div class="node" data-i="2"><b>Redis</b><span>sub-ms · shared</span></div>
-          <div class="node" data-i="3"><b>Postgres</b><span>source of truth</span></div>
-          <i class="packet" id="packet"></i>
-        </div>
-        <p class="flow-caption" id="flow-caption" aria-live="off"></p>
-      </div>
-    </section>
-
-    <section id="features" class="section">
-      <p class="section-index reveal"><b>02</b> / What it does</p>
-      <h2 class="section-title reveal">Built like a system, not a demo.</h2>
-      <div class="grid">
-        <article class="card reveal"><h3>Layered caching</h3><p>In-process LRU, then Redis, then Postgres. Expiry travels with the cached value, so an expired link can't outlive its time in any layer.</p></article>
-        <article class="card reveal"><h3>Durable ID blocks</h3><p>Each instance reserves 1,000 IDs at once from a Postgres sequence. Sequences can't be evicted like a cache key, so codes never repeat.</p></article>
-        <article class="card reveal"><h3>Async click analytics</h3><p>Clicks are queued and written in batches. A slow database drops analytics, never redirects.</p></article>
-        <article class="card reveal"><h3>Guarded writes</h3><p>Link creation and sign-in are rate limited through Redis. The redirect path is never throttled.</p></article>
-        <article class="card reveal locked-card"><span class="tag">Account</span><h3>Custom aliases &amp; expiry</h3><p>Pick your own short code, or make a link that disappears after an hour, a day or a month.</p></article>
-        <article class="card reveal locked-card"><span class="tag">Account</span><h3>Analytics dashboard</h3><p>Clicks per day, unique visitors, browsers, systems and referrers for every link you own.</p></article>
-      </div>
-      <div class="cta reveal" id="cta">
-        <div><h3>Own your links.</h3><p>Create a free account to manage links, set aliases and expiry, and see who clicked.</p></div>
-        <button class="btn solid" type="button" data-open-auth="signup">Create account</button>
-      </div>
-    </section>
-
-    <section id="performance" class="section">
-      <p class="section-index reveal"><b>03</b> / The numbers</p>
-      <h2 class="section-title reveal">100 million a day is a low bar.</h2>
-      <p class="section-copy reveal">A hundred million requests a day averages about 1,160 per second. One container measured nearly twenty times that.</p>
-      <div class="bars reveal" id="bars">
-        <div class="bar-row"><span class="bar-label">100M / day target</span><div class="bar-track"><i class="bar-fill muted" style="--w:5.2%"></i></div><span class="bar-value">1,157 req/s</span></div>
-        <div class="bar-row"><span class="bar-label">Measured, one instance</span><div class="bar-track"><i class="bar-fill" style="--w:100%"></i></div><span class="bar-value">22,383 req/s</span></div>
-      </div>
-      <p class="fine reveal">Measured against a warm local instance over Docker networking, with the load generator on the same machine. The free-tier deployment sleeps when idle and has far less CPU, so treat these as a measure of the architecture, not of this hosting.</p>
-    </section>
-  </main>
-
-  <main id="view-dashboard" hidden>
-    <section class="dash-head">
-      <p class="eyebrow">Dashboard</p>
-      <h1 class="dash-title">Your links</h1>
-      <div class="dash-stats" id="dash-stats"></div>
-    </section>
-
-    <section class="panel" aria-labelledby="new-link-h">
-      <h2 id="new-link-h" class="panel-h">New link</h2>
-      <form class="dash-form" id="dash-form" novalidate>
-        <div class="field wide"><label for="d-url">Destination URL</label><input id="d-url" type="url" placeholder="https://example.com/long/path" required /></div>
-        <div class="field"><label for="d-alias">Custom alias <em>optional</em></label><input id="d-alias" type="text" placeholder="my-launch" pattern="[A-Za-z0-9_-]{3,32}" maxlength="32" autocomplete="off" /></div>
-        <div class="field"><label for="d-exp">Expires</label>
-          <select id="d-exp"><option value="0">Never</option><option value="3600">In 1 hour</option><option value="86400">In 1 day</option><option value="604800">In 7 days</option><option value="2592000">In 30 days</option></select></div>
-        <button class="btn solid" type="submit">Create</button>
-      </form>
-      <p class="form-error" id="dash-error" role="alert" hidden></p>
-    </section>
-
-    <section class="panel" aria-labelledby="links-h">
-      <h2 id="links-h" class="panel-h">All links</h2>
-      <div id="links-list" class="links-list"></div>
-    </section>
-
-    <section class="panel" id="analytics-panel" hidden aria-labelledby="an-h">
-      <div class="an-head">
-        <div><h2 id="an-h" class="panel-h">Analytics</h2><p class="an-sub" id="an-sub"></p></div>
-        <button class="btn ghost sm" type="button" id="an-close">Close</button>
-      </div>
-      <div class="an-tiles" id="an-tiles"></div>
-      <div class="chart" id="chart"></div>
-      <div class="an-cols" id="an-cols"></div>
-    </section>
-  </main>
-
-  <footer class="foot">
-    <span>Snaplink · open source · <a href="https://github.com/sonofnos/snaplink" target="_blank" rel="noopener">github.com/sonofnos/snaplink</a></span>
-    <span>Built by <a href="https://portfolio.sonofnos.com" target="_blank" rel="noopener">sonofnos</a></span>
+  <footer>
+    <a href="https://sonofnos.com" target="_blank" rel="noopener">sonofnos</a><span class="sep">|</span>
+    <a href="https://portfolio.sonofnos.com" target="_blank" rel="noopener">portfolio</a><span class="sep">|</span>
+    <a href="https://github.com/sonofnos" target="_blank" rel="noopener">github</a>
   </footer>
-</div>
+</main>
+
+<main id="view-dashboard" class="wide" hidden>
+  <nav class="crumbs"><a href="#/">← snaplink</a><span class="sep">|</span><span class="muted" id="who"></span><span class="sep">|</span><button type="button" class="link" id="signout">sign out</button></nav>
+
+  <h1>your links</h1>
+  <p class="muted" id="dash-summary"></p>
+
+  <hr />
+
+  <h2>new link</h2>
+  <form class="dash-form" id="dash-form" novalidate>
+    <label class="f-url"><span>destination</span><input id="d-url" type="url" placeholder="https://example.com/long/path" spellcheck="false" required /></label>
+    <label><span>alias <em>optional</em></span><input id="d-alias" type="text" placeholder="my-launch" maxlength="32" autocomplete="off" spellcheck="false" /></label>
+    <label><span>expires</span><select id="d-exp"><option value="0">never</option><option value="3600">in 1 hour</option><option value="86400">in 1 day</option><option value="604800">in 7 days</option><option value="2592000">in 30 days</option></select></label>
+    <button type="submit">create</button>
+  </form>
+  <p class="error" id="dash-error" role="alert" hidden></p>
+
+  <hr />
+
+  <h2>links</h2>
+  <div id="links-list"></div>
+
+  <section id="analytics-panel" hidden>
+    <hr />
+    <div class="an-head"><h2 id="an-h">analytics</h2><button type="button" class="link" id="an-close">close</button></div>
+    <p class="muted" id="an-sub"></p>
+    <div class="chart" id="chart"></div>
+    <div id="an-cols"></div>
+  </section>
+</main>
 
 <dialog id="auth-dialog" aria-labelledby="auth-title">
-  <form method="dialog" id="auth-form" novalidate>
-    <div class="dlg-head">
-      <h2 id="auth-title">Sign in</h2>
-      <button type="button" class="dlg-x" id="auth-close" aria-label="Close">×</button>
-    </div>
-    <div class="seg" role="tablist" aria-label="Account">
-      <button type="button" role="tab" id="tab-login" aria-selected="true">Sign in</button>
-      <button type="button" role="tab" id="tab-signup" aria-selected="false">Create account</button>
-    </div>
-    <div class="field"><label for="a-email">Email</label><input id="a-email" type="email" autocomplete="email" required /></div>
-    <div class="field"><label for="a-pass">Password <em id="a-pass-hint" hidden>8–72 characters</em></label><input id="a-pass" type="password" autocomplete="current-password" minlength="8" maxlength="72" required /></div>
-    <p class="form-error" id="auth-error" role="alert" hidden></p>
-    <button class="btn solid full" type="submit" id="auth-submit">Sign in</button>
+  <form id="auth-form" novalidate>
+    <div class="dlg-head"><h1 id="auth-title">sign in</h1><button type="button" class="link" id="auth-close">close</button></div>
+    <p class="tabs"><button type="button" class="link" id="tab-login" aria-pressed="true">sign in</button><span class="sep">|</span><button type="button" class="link" id="tab-signup" aria-pressed="false">create account</button></p>
+    <label><span>email</span><input id="a-email" type="email" autocomplete="email" required /></label>
+    <label><span>password <em id="a-pass-hint" hidden>8–72 characters</em></span><input id="a-pass" type="password" autocomplete="current-password" minlength="8" maxlength="72" required /></label>
+    <p class="error" id="auth-error" role="alert" hidden></p>
+    <button type="submit" id="auth-submit">sign in</button>
   </form>
 </dialog>
+
+<div id="link-preview" aria-hidden="true">
+  <div class="preview-card">
+    <div class="preview-footer">
+      <img class="preview-favicon" id="preview-favicon" alt="" />
+      <div class="preview-meta"><div class="preview-title" id="preview-title"></div><div class="preview-domain" id="preview-domain"></div></div>
+    </div>
+  </div>
+  <div class="preview-caret"></div>
+</div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/static/app.js"></script>

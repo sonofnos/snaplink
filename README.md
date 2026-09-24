@@ -134,11 +134,12 @@ ownership-checked, and answer 404 whether a link is someone else's or
 doesn't exist. Click history is pruned after 90 days to stay inside the
 free 1 GB database.
 
-The UI (`cmd/server/web`, no build step) uses the design tokens of
-[portfolio.sonofnos.com](https://portfolio.sonofnos.com): the same
-palette, type (Instrument Serif / Manrope / IBM Plex Mono), and
-system/light/dark theming, with motion that respects
-`prefers-reduced-motion`.
+The UI (`cmd/server/web`, plain HTML/CSS/JS, no build step) follows the
+[sonofnos.com](https://sonofnos.com) design system: JetBrains Mono only,
+an ASCII-art wordmark, one narrow column, 1px rules, pipe-separated text
+links, the frosted hover-preview card, and light/dark following the OS.
+Motion is limited to a typed request trace, ASCII bars and the analytics
+chart, and it switches off under `prefers-reduced-motion`.
 
 ## What's actually in the box
 
